@@ -1,0 +1,80 @@
+name: security-agent
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  scan-and-gate:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      TARGET_DIR: .
+      BASELINE_FILE: ci/baseline.groups.json
+      OUT_DIR: outputs
+      FAIL_SEVERITY: high
+      SECURITY_AGENT_REF: main
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install security-agent
+        run: |
+          python -m pip install --upgrade pip
+
+          # Recommended for early adoption: install from a pinned git ref.
+          # For reproducibility, set SECURITY_AGENT_REF to a commit SHA or release tag.
+          python -m pip install "git+https://github.com/samadroohi/security-agent.git@${SECURITY_AGENT_REF}"
+
+          # Alternative: install from PyPI (once published)
+          # python -m pip install "security-agent==<VERSION>"
+
+      - name: Install Semgrep
+        run: |
+          python -m pip install semgrep
+
+      - name: Ensure baseline exists
+        run: |
+          test -f "$BASELINE_FILE" || (echo "Missing baseline file: $BASELINE_FILE (see ci/README.md)" && exit 1)
+
+      - name: Scan (full)
+        run: |
+          mkdir -p "$OUT_DIR"
+          python -m security_agent scan \
+            --semgrep "$TARGET_DIR" \
+            --out-format groups \
+            --out "$OUT_DIR/groups.json"
+
+      - name: Scan (new since baseline)
+        run: |
+          python -m security_agent scan \
+            --semgrep "$TARGET_DIR" \
+            --baseline "$BASELINE_FILE" \
+            --out-format groups \
+            --out "$OUT_DIR/groups.new.json" \
+            --report-out "$OUT_DIR/report.md"
+
+      - name: Gate PR
+        run: |
+          python -m security_agent gate \
+            --in "$OUT_DIR/groups.new.json" \
+            --fail-severity "$FAIL_SEVERITY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-agent
+          path: |
+            outputs/groups.json
+            outputs/groups.new.json
+            outputs/report.md
